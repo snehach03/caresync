@@ -1,0 +1,497 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Caregiver Companion | Voice Demo</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <style>
+        .voice-blob {
+            transition: all 0.3s ease;
+        }
+
+        .listening {
+            animation: pulse 1.5s infinite;
+            background-color: #ef4444 !important;
+        }
+
+        @keyframes pulse {
+            0% {
+                transform: scale(1);
+                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+            }
+            70% {
+                transform: scale(1.1);
+                box-shadow: 0 0 0 15px rgba(239, 68, 68, 0);
+            }
+            100% {
+                transform: scale(1);
+                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+            }
+        }
+    </style>
+</head>
+
+<body class="bg-slate-50 min-h-screen flex flex-col items-center justify-center p-4 font-sans">
+
+    <div class="max-w-2xl w-full bg-white rounded-3xl shadow-2xl overflow-hidden border border-slate-200">
+
+        <div class="bg-indigo-600 p-6 text-white text-center">
+            <h1 class="text-2xl font-bold">Caregiver Companion</h1>
+            <p class="text-indigo-100 opacity-90">Voice-First Health Assistant</p>
+        </div>
+
+        <div id="chat-window"
+             class="h-[400px] overflow-y-auto p-6 space-y-4 bg-slate-50">
+            <div class="flex justify-start">
+                <div class="bg-white border border-slate-200 text-slate-800 p-3 rounded-2xl rounded-tl-none max-w-[80%] shadow-sm">
+                    Hello! I'm your care companion. Ask about medications,
+                    your weekly summary, or tell me how you're feeling.
+                </div>
+            </div>
+        </div>
+
+        <div class="p-6 border-t border-slate-100 bg-white flex flex-col items-center space-y-4">
+
+            <div id="status-text" class="text-sm text-slate-500">
+                Click the microphone to speak
+            </div>
+
+            <button id="voice-btn"
+                    type="button"
+                    class="voice-blob w-20 h-20 bg-indigo-600 rounded-full flex items-center justify-center cursor-pointer shadow-lg hover:bg-indigo-700 transition-colors"
+                    aria-label="Start voice input">
+
+                <svg xmlns="http://www.w3.org/2000/svg"
+                     class="h-10 w-10 text-white"
+                     fill="none"
+                     viewBox="0 0 24 24"
+                     stroke="currentColor">
+                    <path stroke-linecap="round"
+                          stroke-linejoin="round"
+                          stroke-width="2"
+                          d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
+                </svg>
+            </button>
+
+            <p class="text-xs text-slate-500 text-center">
+                Try: "Show my medications", "How was my week?",
+                or "I feel happy today".
+            </p>
+
+            <div class="w-full border-t border-slate-100 pt-4 space-y-3">
+                <h2 class="font-semibold text-slate-700">Connection settings</h2>
+
+                <label for="patient-id" class="block text-sm text-slate-600">
+                    Patient UUID
+                </label>
+                <input id="patient-id"
+                       type="text"
+                       placeholder="Enter patient UUID"
+                       autocomplete="off"
+                       class="w-full border border-slate-300 rounded-lg p-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+
+                <label for="token-input" class="block text-sm text-slate-600">
+                    MCP authentication token
+                </label>
+                <input id="token-input"
+                       type="password"
+                       value="default-secret-token"
+                       autocomplete="off"
+                       class="w-full border border-slate-300 rounded-lg p-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+
+                <button id="test-connection"
+                        type="button"
+                        class="w-full bg-slate-800 hover:bg-slate-900 text-white rounded-lg p-3 text-sm">
+                    Test MCP Connection
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        "use strict";
+
+        const chatWindow = document.getElementById("chat-window");
+        const voiceBtn = document.getElementById("voice-btn");
+        const statusText = document.getElementById("status-text");
+        const patientIdInput = document.getElementById("patient-id");
+        const tokenInput = document.getElementById("token-input");
+        const testConnectionBtn = document.getElementById("test-connection");
+
+        const SpeechRecognition =
+            window.SpeechRecognition || window.webkitSpeechRecognition;
+
+        const recognition = SpeechRecognition
+            ? new SpeechRecognition()
+            : null;
+
+        const synth = window.speechSynthesis;
+
+        if (recognition) {
+            recognition.lang = "en-US";
+            recognition.interimResults = false;
+            recognition.maxAlternatives = 1;
+        } else {
+            statusText.textContent =
+                "Speech recognition is not supported by this browser. Try Chrome or Edge.";
+            voiceBtn.disabled = true;
+            voiceBtn.classList.add("opacity-50");
+        }
+
+        let mcpSessionId = null;
+        let mcpProtocolVersion = null;
+        let mcpRequestId = 0;
+        let mcpInitPromise = null;
+
+        const MCP_URL = "http://localhost:8000/mcp";
+        const MCP_PROTOCOL_VERSION = "2025-06-18";
+
+        function addMessage(text, isUser = false) {
+            const row = document.createElement("div");
+            row.className = `flex ${isUser ? "justify-end" : "justify-start"}`;
+
+            const bubble = document.createElement("div");
+            bubble.className = isUser
+                ? "bg-indigo-600 text-white rounded-tr-none p-3 rounded-2xl max-w-[80%] shadow-sm whitespace-pre-wrap break-words"
+                : "bg-white border border-slate-200 text-slate-800 rounded-tl-none p-3 rounded-2xl max-w-[80%] shadow-sm whitespace-pre-wrap break-words";
+
+            bubble.textContent = text;
+            row.appendChild(bubble);
+            chatWindow.appendChild(row);
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+        }
+
+        function speak(text) {
+            if (!("speechSynthesis" in window)) return;
+
+            synth.cancel();
+
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.rate = 0.9;
+            utterance.pitch = 1.0;
+            synth.speak(utterance);
+        }
+
+        function parseMcpResponse(body, contentType) {
+            if (!body || !body.trim()) return null;
+
+            if (contentType.includes("text/event-stream")) {
+                const events = body.split(/\r?\n\r?\n/);
+
+                for (const event of events) {
+                    const data = event
+                        .split(/\r?\n/)
+                        .filter(line => line.startsWith("data:"))
+                        .map(line => line.slice(5).trim())
+                        .join("\n");
+
+                    if (data) {
+                        try {
+                            return JSON.parse(data);
+                        } catch {
+                            // Try the next SSE event.
+                        }
+                    }
+                }
+
+                throw new Error("The MCP server returned no JSON-RPC event.");
+            }
+
+            return JSON.parse(body);
+        }
+
+        async function mcpPost(payload) {
+            const headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream"
+            };
+
+            if (mcpSessionId) {
+                headers["MCP-Session-Id"] = mcpSessionId;
+            }
+
+            if (mcpProtocolVersion) {
+                headers["MCP-Protocol-Version"] = mcpProtocolVersion;
+            }
+
+            const response = await fetch(MCP_URL, {
+                method: "POST",
+                headers,
+                body: JSON.stringify(payload)
+            });
+
+            const sessionId = response.headers.get("MCP-Session-Id");
+
+            if (sessionId) {
+                mcpSessionId = sessionId;
+            }
+
+            const body = await response.text();
+
+            if (!response.ok) {
+                throw new Error(`MCP HTTP ${response.status}: ${body}`);
+            }
+
+            const contentType = response.headers.get("content-type") || "";
+            return parseMcpResponse(body, contentType);
+        }
+
+        async function initializeMCP() {
+            if (mcpSessionId && mcpProtocolVersion) return;
+
+            if (mcpInitPromise) return mcpInitPromise;
+
+            mcpInitPromise = (async () => {
+                const response = await mcpPost({
+                    jsonrpc: "2.0",
+                    id: ++mcpRequestId,
+                    method: "initialize",
+                    params: {
+                        protocolVersion: MCP_PROTOCOL_VERSION,
+                        capabilities: {},
+                        clientInfo: {
+                            name: "caregiver-companion-demo",
+                            version: "1.0.0"
+                        }
+                    }
+                });
+
+                if (response?.error) {
+                    throw new Error(response.error.message);
+                }
+
+                if (!response?.result?.protocolVersion) {
+                    throw new Error("Invalid MCP initialization response.");
+                }
+
+                mcpProtocolVersion = response.result.protocolVersion;
+
+                await mcpPost({
+                    jsonrpc: "2.0",
+                    method: "notifications/initialized"
+                });
+            })();
+
+            try {
+                await mcpInitPromise;
+            } catch (error) {
+                mcpSessionId = null;
+                mcpProtocolVersion = null;
+                throw error;
+            } finally {
+                mcpInitPromise = null;
+            }
+        }
+
+        async function callMCP(tool, args = {}) {
+            await initializeMCP();
+
+            const token = tokenInput.value.trim();
+            const patientId = patientIdInput.value.trim();
+
+            if (!token) {
+                throw new Error("Enter your MCP authentication token.");
+            }
+
+            const toolArgs = {
+                ...args,
+                token
+            };
+
+            if (
+                tool === "get_todays_meds" ||
+                tool === "daily_health_checkin" ||
+                tool === "get_family_summary" ||
+                tool === "get_emotional_health_trend"
+            ) {
+                if (!patientId) {
+                    throw new Error("Enter the patient's UUID first.");
+                }
+
+                toolArgs.patient_id = patientId;
+            }
+
+            const response = await mcpPost({
+                jsonrpc: "2.0",
+                id: ++mcpRequestId,
+                method: "tools/call",
+                params: {
+                    name: tool,
+                    arguments: toolArgs
+                }
+            });
+
+            if (response?.error) {
+                throw new Error(response.error.message);
+            }
+
+            const result = response?.result;
+
+            if (!result) {
+                throw new Error("No tool result received from MCP.");
+            }
+
+            const message = (result.content || [])
+                .map(item => item.text || "")
+                .filter(Boolean)
+                .join("\n");
+
+            if (result.isError) {
+                throw new Error(message || "The MCP tool failed.");
+            }
+
+            return message || "The MCP server returned no text.";
+        }
+
+        async function handleVoiceInput(text) {
+            addMessage(text, true);
+            statusText.textContent = "Connecting to MCP...";
+
+            const input = text.toLowerCase();
+            let responseText;
+
+            try {
+                if (
+                    input.includes("medication") ||
+                    input.includes("medicine") ||
+                    input.includes("take today")
+                ) {
+                    responseText = await callMCP("get_todays_meds", {});
+
+                } else if (
+                    input.includes("missed dose") ||
+                    input.includes("forgot medicine")
+                ) {
+                    responseText =
+                        "To report a missed dose, the demo needs a real schedule UUID. This voice shortcut does not have one yet.";
+
+                } else if (
+                    input.includes("took") ||
+                    input.includes("done")
+                ) {
+                    responseText =
+                        "To record a dose, this demo needs the real schedule UUID. It will not submit a fake ID.";
+
+                } else if (
+                    input.includes("feel") ||
+                    input.includes("mood") ||
+                    input.includes("happy") ||
+                    input.includes("sad")
+                ) {
+                    responseText = await callMCP("daily_health_checkin", {
+                        mood: 4,
+                        notes: text
+                    });
+
+                } else if (
+                    input.includes("summary") ||
+                    input.includes("week") ||
+                    input.includes("adherence")
+                ) {
+                    responseText = await callMCP("get_family_summary", {});
+
+                } else if (
+                    input.includes("trend") ||
+                    input.includes("emotional") ||
+                    input.includes("feeling lately")
+                ) {
+                    responseText = await callMCP(
+                        "get_emotional_health_trend",
+                        {}
+                    );
+
+                } else {
+                    responseText =
+                        "I heard you, but I'm not sure how to help. Try asking about medications, your weekly summary, or telling me how you feel.";
+                }
+
+            } catch (error) {
+                console.error("MCP error:", error);
+                responseText = `Connection or tool error: ${error.message}`;
+            }
+
+            addMessage(responseText);
+            speak(responseText);
+            statusText.textContent = "Click the microphone to speak";
+        }
+
+        voiceBtn.addEventListener("click", () => {
+            if (!recognition) return;
+
+            try {
+                recognition.start();
+                voiceBtn.classList.add("listening");
+                statusText.textContent = "Listening...";
+            } catch (error) {
+                statusText.textContent =
+                    "Microphone is busy. Please try again.";
+            }
+        });
+
+        if (recognition) {
+            recognition.onresult = event => {
+                const transcript = event.results[0][0].transcript;
+                handleVoiceInput(transcript);
+            };
+
+            recognition.onspeechend = () => {
+                recognition.stop();
+            };
+
+            recognition.onend = () => {
+                voiceBtn.classList.remove("listening");
+
+                if (statusText.textContent === "Listening...") {
+                    statusText.textContent = "Click the microphone to speak";
+                }
+            };
+
+            recognition.onerror = event => {
+                voiceBtn.classList.remove("listening");
+                statusText.textContent = `Microphone error: ${event.error}`;
+            };
+        }
+
+        testConnectionBtn.addEventListener("click", async () => {
+            statusText.textContent = "Testing MCP connection...";
+            testConnectionBtn.disabled = true;
+
+            try {
+                await initializeMCP();
+
+                const response = await mcpPost({
+                    jsonrpc: "2.0",
+                    id: ++mcpRequestId,
+                    method: "tools/list",
+                    params: {}
+                });
+
+                if (response?.error) {
+                    throw new Error(response.error.message);
+                }
+
+                const tools = response?.result?.tools || [];
+                const names = tools.map(tool => tool.name);
+
+                const message =
+                    `Connected to MCP successfully. ${tools.length} tools found:\n` +
+                    names.join(", ");
+
+                addMessage(message);
+                statusText.textContent = "MCP connected successfully";
+
+            } catch (error) {
+                console.error("MCP connection test failed:", error);
+                statusText.textContent = "MCP connection failed";
+                addMessage(`Connection failed: ${error.message}`);
+
+            } finally {
+                testConnectionBtn.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>
